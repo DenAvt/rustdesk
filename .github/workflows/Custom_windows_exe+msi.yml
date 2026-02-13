@@ -9,7 +9,8 @@ env:
   RUST_VERSION: "1.75"
   FLUTTER_VERSION: "3.22.3"
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
-  RUSTDESK_VERSION: "1.0.0-custom"  # Версия для установщика
+  RUSTDESK_VERSION: "1.0.0-custom"
+  RUSTDESK_NAME: "AvtoDesk"
 
 jobs:
   build-windows-exe:
@@ -149,29 +150,54 @@ jobs:
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
           echo "✓ Build successful"
 
+      # === КРИТИЧЕСКИ ВАЖНЫЙ ШАГ: переименование файла перед созданием установщика ===
+      - name: Rename rustdesk.exe to AvtoDesk.exe
+        shell: pwsh
+        run: |
+          $srcExe = "./rustdesk/rustdesk.exe"
+          $dstExe = "./rustdesk/AvtoDesk.exe"
+          
+          if (Test-Path $srcExe) {
+            # Переименовываем основной экзешник
+            Rename-Item -Path $srcExe -NewName "AvtoDesk.exe"
+            Write-Host "✓ Renamed rustdesk.exe → AvtoDesk.exe"
+          } else {
+            Write-Error "ERROR: rustdesk.exe not found at $srcExe!"
+            Get-ChildItem -Path "./rustdesk/" -Filter "*.exe" | Format-Table Name
+            exit 1
+          }
+          
+          # Проверяем результат
+          if (-not (Test-Path $dstExe)) {
+            Write-Error "AvtoDesk.exe not found after rename!"
+            exit 1
+          }
+          
+          Write-Host "✓ Executable successfully renamed to AvtoDesk.exe"
+
       - name: Build MSI installer
         shell: pwsh
         run: |
-          # Подготовка файлов для установщика
+          # Подготовка файлов для установщика с правильным именем приложения
           cd res/msi
-          python preprocess.py --arp -d ../../rustdesk
+          python preprocess.py --arp -d ../../rustdesk --app-name "${{ env.RUSTDESK_NAME }}"
           
           # Восстановление NuGet-пакетов
           nuget restore msi.sln
           
-          # Сборка MSI
+          # Сборка MSI с кастомными параметрами
           msbuild msi.sln `
             -p:Configuration=Release `
             -p:Platform=x64 `
             -p:TargetVersion=Windows10 `
             -p:ProductVersion="${{ env.RUSTDESK_VERSION }}" `
-            -p:ProductName="RustDesk Custom" `
+            -p:ProductName="${{ env.RUSTDESK_NAME }}" `
             -p:Manufacturer="Your Company" `
             -maxcpucount:2
           
           # Перемещение результата
           $msiSource = "./Package/bin/x64/Release/en-us/Package.msi"
-          $msiDest = "../../dist/rustdesk-${{ env.RUSTDESK_VERSION }}-x64.msi"
+          $msiDest = "../../dist/${{ env.RUSTDESK_NAME }}-${{ env.RUSTDESK_VERSION }}-x64.msi"
           
           if (Test-Path $msiSource) {
             New-Item -ItemType Directory -Path "../../dist" -Force | Out-Null
@@ -187,17 +213,19 @@ jobs:
       - name: Create single EXE (self-extracting)
         shell: bash
         run: |
+          # Удаляем dpiAware из манифеста
           sed -i '/dpiAware/d' res/manifest.xml
           
+          # Генерация портативного пакета с правильным именем экзешника
           cd libs/portable
           pip install -r requirements.txt
-          python ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          python ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/AvtoDesk.exe
           cd ../..
           
           mkdir -p ./dist
-          mv ./target/release/rustdesk-portable-packer.exe ./dist/rustdesk-custom.exe
-          echo "✓ Single EXE created: ./dist/rustdesk-custom.exe"
-          ls -lh ./dist/rustdesk-custom.exe
+          mv ./target/release/rustdesk-portable-packer.exe "./dist/${{ env.RUSTDESK_NAME }}-custom.exe"
+          echo "✓ Single EXE created: ./dist/${{ env.RUSTDESK_NAME }}-custom.exe"
+          ls -lh "./dist/${{ env.RUSTDESK_NAME }}-custom.exe"
 
       - name: Verify build artifacts
         shell: pwsh
@@ -211,11 +239,11 @@ jobs:
           }
           
           # Проверка существования файлов
-          $exeExists = Test-Path "./dist/rustdesk-custom.exe"
-          $msiExists = Test-Path "./dist/rustdesk-${{ env.RUSTDESK_VERSION }}-x64.msi"
+          $exePath = "./dist/${{ env.RUSTDESK_NAME }}-custom.exe"
+          $msiPath = "./dist/${{ env.RUSTDESK_NAME }}-${{ env.RUSTDESK_VERSION }}-x64.msi"
           
-          if (-not $exeExists) { Write-Error "EXE not found!"; exit 1 }
-          if (-not $msiExists) { Write-Error "MSI not found!"; exit 1 }
+          if (-not (Test-Path $exePath)) { Write-Error "EXE not found at $exePath!"; exit 1 }
+          if (-not (Test-Path $msiPath)) { Write-Error "MSI not found at $msiPath!"; exit 1 }
           Write-Host "✓ All artifacts created successfully"
 
       - name: Upload artifacts
